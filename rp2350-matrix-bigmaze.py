@@ -2,6 +2,7 @@
 # 迷路を描き玉を転がす
 # 迷路を大きくしてスクロールするようにした版
 # 2026.3.16 by Tetsu=TaLow
+# 2026.3.20 v0.2
 
 from machine import I2C, Pin
 import neopixel
@@ -28,9 +29,6 @@ COLOR_PATH = (0, 0, 0)   # 黒 (消灯)
 COLOR_PLAYER = (10, 0, 5)# エメラルドグリーン
 COLOR_GOAL = (0, 5, 5)   # 紫 (ゴールの目印)
 COLOR_MES = (10, 10, 0)  # 黄
-
-# ゴール時のメッセージ
-MES = " GOAL!"
 
 # === QMI8658 センサードライバ ===
 class QMI8658(object):
@@ -121,31 +119,61 @@ def generate_maze():
 
 # 大きくなるとわからなくなるのでヒント用にコンソールに迷路を描く
 def draw_maze(maze):
-    for y in range(MAZE_SIZE):
-        s = ''.join('#' if v else ' ' for v in maze[y]) 
-        print(s)                
+    s = '\n'.join(''.join('#' if v else ' ' for v in line) for line in maze) 
+    print(s)                
+
+# メッセージ表示用のframebuf
+def message_framebuf(message):
+    BUF_W=LED_W*len(message)
+    buf=bytearray(BUF_W*LED_H)
+    fb=framebuf.FrameBuffer(buf, BUF_W, LED_H, framebuf.MONO_HLSB) # 白黒のフレームバッファ
+    fb.text(message, 0, 0)
+    return(fb, BUF_W)
+
+def show_fb(fb, start_x=0, end_x=LED_W, color=COLOR_MES):
+    for bx in range(start_x, end_x):
+        for x in range(LED_W):
+            for y in range(LED_H):
+                idx = y * 8 + x
+                if fb.pixel(bx+x,y):
+                    np[idx] = color
+                else:
+                    np[idx] = (0,0,0)
+        np.write()
+        time.sleep(0.03) # スクロール速度
+    return
 
 # === メイン処理 ===
-
-# ゴール表示用のフレームバッファを用意しておく
-BUF_W = LED_W * len(MES)       # フレームバッファの幅
-buf = bytearray(BUF_W * LED_H) # 文字ビットマップが入るバッファ
-fb = framebuf.FrameBuffer(buf, BUF_W, LED_H, framebuf.MONO_HLSB) # 白黒のフレームバッファを作成
-for i in range(len(MES)):
-    fb.text(MES[i], i*LED_W, 0) # 文字を描く (ch, x, y)
 
 # LED初期化
 np = neopixel.NeoPixel(machine.Pin(WS2812_PIN), NUM_LEDS)
 
 # センサー初期化
 sensor = QMI8658()
-print("ゲーム開始！基板を傾けてゴール(右下)を目指してください。")
 
 while True:
+    print("待機中…………………")
+    # 待機画面
+    fb, buf_w = message_framebuf(" SHAKE ME TO START ")
+    x = 0
+    old_xyz = sensor.Read_XYZ()
+    while True:
+        show_fb(fb, x, x+1, (0,0,1))
+        xyz = sensor.Read_XYZ()
+        if abs(xyz[0]-old_xyz[0])+abs(xyz[1]-old_xyz[1])+abs(xyz[2]-old_xyz[2]) > 0.3:
+            break # ゲーム開始
+        else:
+            x += 1
+            if x >= buf_w: x = 0
+            time.sleep(0.1)
+
     # 迷路の生成と初期化
     maze = generate_maze()
     draw_maze(maze) # ヒントとしてコンソールに迷路を表示
+    print("ゲーム開始！基板を傾けてゴール(右下)を目指してください。")
     px, py = 1, 1 # プレイヤーの初期座標 (左上)
+    nomove = 0
+    
     
     # 1ステージのゲームループ
     while True:
@@ -155,6 +183,7 @@ while True:
         
         # 2. 移動判定 (0.15G以上の傾きで移動)
         THRESHOLD = 0.15
+        moved = False
         new_x, new_y = px, py
         
         if acc_x < -THRESHOLD:  new_x -= 1
@@ -166,8 +195,15 @@ while True:
         # 3. 衝突判定 (X軸とY軸を別々に判定)
         if 0 <= new_x < MAZE_SIZE and maze[py][new_x] == False:
             px = new_x
+            moved = True
         if 0 <= new_y < MAZE_SIZE and maze[new_y][px] == False:
             py = new_y
+            moved = True
+        if moved:
+            nomove = 0
+        else:
+            nomove += 1
+        
         # 4. LEDの描画
         #    プレイヤーを中心にしてスクロールさせるように描く
         cx, cy = LED_W//2-1, LED_H//2-1 # 中心位置
@@ -189,22 +225,18 @@ while True:
                 else:
                     np[idx] = COLOR_OUT # 迷路外
         np.write()
-        
         # 5. クリア判定
         if py == gy and px == gx:
-            print("ゴール！次の迷路を生成します...")
+            print("ゴール！")
             # クリア演出 (画面全体にメッセージをスクロール表示)
-            for bx in range(BUF_W):
-                for x in range(LED_W):
-                    for y in range(LED_H):
-                        idx = y * 8 + x
-                        if fb.pixel(bx+x,y):
-                            np[idx] = COLOR_MES
-                        else:
-                            np[idx] = (0,0,0)
-                np.write()
-                time.sleep(0.03) # スクロール速度
+            fb, buf_w = message_framebuf(" GOAL!!")
+            show_fb(fb, 0, buf_w)
             break # 現在の迷路ループを抜けて新しい迷路を作る
-            
+        elif nomove > 100:
+            print("時間切れ！")
+            fb, buf_w = message_framebuf(" TIMEOUT ")
+            show_fb(fb, 0, buf_w)
+            break
+
         # 移動スピードの調整 (値を小さくすると速く動く)
         time.sleep(0.15)
