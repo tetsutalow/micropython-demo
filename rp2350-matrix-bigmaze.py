@@ -3,6 +3,7 @@
 # 迷路を大きくしてスクロールするようにした版
 # 2026.3.16 by Tetsu=TaLow
 # 2026.3.20 v0.2
+# 2026.3.22 v0.3 ランキング表示追加
 
 from machine import I2C, Pin
 import neopixel
@@ -143,6 +144,18 @@ def show_fb(fb, start_x=0, end_x=LED_W, color=COLOR_MES):
         time.sleep(0.03) # スクロール速度
     return
 
+# === ランキング表示 ===
+def print_ranking(ranking):
+    print("\n===== ランキング (Top 5) =====")
+    if not ranking:
+        print("  まだ記録がありません")
+    else:
+        for i, t in enumerate(ranking):
+            minutes = t // 60000
+            seconds = (t % 60000) / 1000
+            print("  %d位: %d分%05.2f秒" % (i + 1, minutes, seconds))
+    print("==============================\n")
+
 # === メイン処理 ===
 
 # LED初期化
@@ -150,6 +163,9 @@ np = neopixel.NeoPixel(machine.Pin(WS2812_PIN), NUM_LEDS)
 
 # センサー初期化
 sensor = QMI8658()
+
+# ランキングリスト (クリアタイムの昇順、最大5件)
+ranking = []
 
 while True:
     print("待機中…………………")
@@ -173,6 +189,7 @@ while True:
     print("ゲーム開始！基板を傾けてゴール(右下)を目指してください。")
     px, py = 1, 1 # プレイヤーの初期座標 (左上)
     nomove = 0
+    start_time = time.ticks_ms() # クリアタイム計測開始
     
     
     # 1ステージのゲームループ
@@ -227,13 +244,28 @@ while True:
         np.write()
         # 5. クリア判定
         if py == gy and px == gx:
-            print("ゴール！")
+            clear_time = time.ticks_diff(time.ticks_ms(), start_time)
+            minutes = clear_time // 60000
+            seconds = (clear_time % 60000) / 1000
+            print("ゴール！ クリアタイム: %d分%05.2f秒" % (minutes, seconds))
+            # ランキングに登録 (昇順で挿入)
+            inserted = False
+            for i in range(len(ranking)):
+                if clear_time < ranking[i]:
+                    ranking.insert(i, clear_time)
+                    inserted = True
+                    break
+            if not inserted:
+                ranking.append(clear_time)
+            ranking[:] = ranking[:5] # 上位5件のみ保持
+            print_ranking(ranking)
             # クリア演出 (画面全体にメッセージをスクロール表示)
             fb, buf_w = message_framebuf(" GOAL!!")
             show_fb(fb, 0, buf_w)
             break # 現在の迷路ループを抜けて新しい迷路を作る
         elif nomove > 100:
             print("時間切れ！")
+            print_ranking(ranking)
             fb, buf_w = message_framebuf(" TIMEOUT ")
             show_fb(fb, 0, buf_w)
             break
